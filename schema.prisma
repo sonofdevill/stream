@@ -1,0 +1,281 @@
+// =============================================================================
+// GEMSTREAM — prisma/schema.prisma
+// Master Database Schema v1.0.0
+//
+// GOVERNING AXIOMS (see SYSTEM_ARCHITECTURE.md §2):
+//   Axiom 2.1 — 1 Gem = $0.10 USDT (10 cents). All peg math is integer-only.
+//   Axiom 2.2 — ZERO floats. Every monetary field is Int (cents or whole Gems).
+//   Axiom 2.3 — Law of Conservation: Gems created only via FiatDepositLog,
+//               destroyed only via PayoutLog. No phantom minting/burning.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // PostgreSQL is mandatory. Its native integer arithmetic eliminates any
+  // risk of IEEE-754 floating-point drift that would violate Axiom 2.2.
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUM: UserRole
+// A single User table with a role discriminator keeps the FK graph simple
+// while allowing role-specific fields to be nullable for the opposing role.
+// =============================================================================
+enum UserRole {
+  VIEWER   // Can purchase Gems and tip Streamers. Holds `gemBalance`.
+  STREAMER // Receives tips. Holds `pendingBalance` + `availableBalance`.
+}
+
+// =============================================================================
+// ENUM: PayoutStatus
+// Tracks the lifecycle of a USDT withdrawal through the crypto off-ramp.
+// =============================================================================
+enum PayoutStatus {
+  REQUESTED   // Streamer submitted the request; hot-wallet tx not yet broadcast.
+  PROCESSING  // Ethers.js tx submitted to Polygon mempool; awaiting confirmation.
+  COMPLETED   // On-chain confirmation received; tx hash recorded.
+  FAILED      // Tx reverted or timed out; availableBalance must be refunded.
+}
+
+// =============================================================================
+// ENUM: TipEventStatus
+// Tracks a tip's position within the 14-day clearing fortress (§3).
+// =============================================================================
+enum TipEventStatus {
+  PENDING    // Gems sit in Streamer.pendingBalance. Chargeback window is open.
+  CLEARED    // 14-day maturation complete. Gems moved to availableBalance.
+  REVERSED   // Chargeback received before clearance. Gems clawed back.
+}
+
+// =============================================================================
+// MODEL: User
+//
+// Unified table for both VIEWER and STREAMER roles.
+//
+// VIEWER-specific fields:
+//   gemBalance      — whole Gems owned (Int). Charged on tip dispatch.
+//
+// STREAMER-specific fields (§3, Axiom 2.2):
+//   pendingBalance  — Gems received but within chargeback window (Int, NOT NULL).
+//   availableBalance— Gems cleared and withdrawable (Int, NOT NULL).
+//   walletAddress   — EVM address for USDT payouts on Polygon.
+//
+// All balance fields default to 0 and are strictly Int — NEVER Float/Decimal.
+// =============================================================================
+model User {
+  id              String   @id @default(uuid())  // UUID v4 primary key
+  email           String   @unique
+  username        String   @unique
+  role            UserRole
+
+  // ── VIEWER BALANCE (Axiom 2.2) ──────────────────────────────────────────
+  // Stores whole Gem count. Null for STREAMER accounts.
+  gemBalance      Int      @default(0)
+
+  // ── STREAMER DUAL-BUCKET BALANCES (§3, Axiom 2.2) ───────────────────────
+  // pendingBalance: tips received but not yet past the 14-day chargeback window.
+  // availableBalance: fully cleared Gems eligible for USDT withdrawal.
+  // Both are strictly Int. NULL is semantically wrong here — 0 is the floor.
+  pendingBalance  Int      @default(0)
+  availableBalance Int     @default(0)
+
+  // ── CRYPTO OFF-RAMP (§6) ─────────────────────────────────────────────────
+  // EVM-compatible wallet address on Polygon. Required before any payout.
+  walletAddress   String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // ── RELATIONS ─────────────────────────────────────────────────────────────
+  // Tips this user SENT (as Viewer)
+  tipsGiven       TipEvent[]     @relation("ViewerTips")
+  // Tips this user RECEIVED (as Streamer)
+  tipsReceived    TipEvent[]     @relation("StreamerTips")
+  // Fiat purchases made by this user (as Viewer)
+  fiatDeposits    FiatDepositLog[]
+  // Payout requests made by this user (as Streamer)
+  payouts         PayoutLog[]
+
+  @@index([role])           // Fast filtering when cron queries only STREAMERs
+  @@index([walletAddress])  // Fast lookup during payout dispatch
+}
+
+// =============================================================================
+// MODEL: FiatDepositLog
+//
+// Immutable ledger entry created when Stripe confirms a successful payment
+// (checkout.session.completed webhook). This is the SOLE point of Gem minting
+// (Axiom 2.3 — no Gems appear from any other source).
+//
+// CRITICAL FIELDS (Axiom 2.2):
+//   amountPaidCents — what the Viewer actually paid Stripe (e.g. 1150 = $11.50)
+//   gemsGranted     — whole Gems credited to Viewer (e.g. 100 Gems for $11.50)
+//
+// The delta (amountPaidCents - gemsGranted * 10) is the platform's gross margin
+// + absorbed Stripe fee. This math is handled outside the DB; the DB only stores
+// immutable integer results.
+//
+// stripePaymentIntentId links this log to a specific Stripe charge, enabling
+// precise chargeback targeting in §3 Chargeback Defense.
+// =============================================================================
+model FiatDepositLog {
+  id                    String   @id @default(uuid())
+
+  // FK → User (must be VIEWER role)
+  viewerId              String
+  viewer                User     @relation(fields: [viewerId], references: [id])
+
+  // ── FIAT AMOUNTS (Axiom 2.2 — stored as Integer cents) ──────────────────
+  // What the Viewer was charged in USD cents. 100 Gems bundle = 1150 cents.
+  amountPaidCents       Int
+
+  // ── GEMS GRANTED (Axiom 2.2 — whole integers only) ───────────────────────
+  // Gems credited to Viewer.gemBalance upon Stripe confirmation.
+  // 100 Gems bundle → gemsGranted = 100.
+  gemsGranted           Int
+
+  // ── STRIPE ANCHORS (§5) ──────────────────────────────────────────────────
+  // Used for idempotency checks and chargeback correlation.
+  stripePaymentIntentId String   @unique  // Deduplication key in webhook handler
+  stripeEventId         String   @unique  // Maps to ProcessedWebhooks table
+
+  // Tips that originated from the Gems funded by this deposit.
+  // Enables surgical chargeback clawback (§3, Chargeback Defense).
+  tipEvents             TipEvent[]
+
+  createdAt             DateTime @default(now())
+
+  @@index([viewerId])
+  @@index([stripePaymentIntentId])
+}
+
+// =============================================================================
+// MODEL: TipEvent
+//
+// Created atomically (prisma.$transaction — §4) whenever a Viewer dispatches
+// Gems to a Streamer. This is the central transaction record of the ledger.
+//
+// CRITICAL FIELDS (Axiom 2.2):
+//   gemAmount — whole Gems transferred (e.g. 50). Strictly Int.
+//
+// CLEARING MECHANISM (§3 — 14-Day Fortress):
+//   clearedAt = createdAt + 1,209,600 seconds (exactly 14 days).
+//   The maturation cron queries: WHERE clearedAt <= NOW() AND status = 'PENDING'
+//   This field is pre-computed at INSERT time, NOT calculated on every cron run,
+//   ensuring the index is tight and the cron is a simple range scan.
+//
+// CHARGEBACK LINK:
+//   fiatDepositLogId links this tip back to the Stripe charge that funded the
+//   Viewer's Gems, enabling surgical reversal without touching availableBalance.
+// =============================================================================
+model TipEvent {
+  id                String         @id @default(uuid())
+
+  // ── PARTIES ───────────────────────────────────────────────────────────────
+  viewerId          String
+  viewer            User           @relation("ViewerTips",    fields: [viewerId],   references: [id])
+  streamerId        String
+  streamer          User           @relation("StreamerTips",  fields: [streamerId], references: [id])
+
+  // ── GEM AMOUNT (Axiom 2.2) ────────────────────────────────────────────────
+  // Whole integer Gems only. The service layer validates gemAmount >= 1 before
+  // this record is ever created.
+  gemAmount         Int
+
+  // ── OPTIONAL METADATA ─────────────────────────────────────────────────────
+  customMessage     String?        // Displayed in OBS alert widget (§7)
+
+  // ── LIFECYCLE STATE (§3) ──────────────────────────────────────────────────
+  status            TipEventStatus @default(PENDING)
+
+  // ── CLEARING SCHEDULE (§3 — 14-Day Fortress) ─────────────────────────────
+  // Timestamp at which this tip matures from pendingBalance → availableBalance.
+  // Pre-calculated at INSERT: clearedAt = createdAt + INTERVAL '14 days'
+  // The maturation cron runs: SELECT * FROM TipEvent
+  //   WHERE clearedAt <= NOW() AND status = 'PENDING'
+  // Indexed below for O(log n) cron performance at scale.
+  clearedAt         DateTime
+
+  // ── CHARGEBACK TRACEABILITY (§3, §5) ─────────────────────────────────────
+  // Optional link to the Stripe deposit that funded the Viewer's gem purchase.
+  // When a chargeback arrives, we query: WHERE fiatDepositLogId = <chargedId>
+  // and reverse only PENDING tips tied to that deposit.
+  fiatDepositLogId  String?
+  fiatDepositLog    FiatDepositLog? @relation(fields: [fiatDepositLogId], references: [id])
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  // ── INDEXES ───────────────────────────────────────────────────────────────
+  @@index([clearedAt, status])      // Primary cron index: pending tips due for clearance
+  @@index([streamerId, status])     // Streamer dashboard balance breakdowns
+  @@index([viewerId])               // Viewer tip history
+  @@index([fiatDepositLogId])       // Chargeback sweep: all tips from a disputed charge
+}
+
+// =============================================================================
+// MODEL: PayoutLog
+//
+// Created when a Streamer submits a valid withdrawal request (availableBalance
+// >= 500 Gems, §3 Payout Gatekeeper). Tracks the crypto off-ramp (§6).
+//
+// CRITICAL FIELDS (Axiom 2.2):
+//   gemAmount    — whole Gems being withdrawn (minimum 500). Strictly Int.
+//   usdtAmountWei— USDT in its lowest unit for Ethers.js BigInt math.
+//                  500 Gems → $50.00 USDT → 50_000_000 (USDT uses 6 decimals).
+//
+// NOTE ON usdtAmountWei: This is NOT a JS Number. It will be constructed as a
+// BigInt in the service layer using ethers.parseUnits(). Stored here as String
+// to avoid PostgreSQL BigInt serialization ambiguity with Prisma.
+// =============================================================================
+model PayoutLog {
+  id              String       @id @default(uuid())
+
+  // FK → User (must be STREAMER role)
+  streamerId      String
+  streamer        User         @relation(fields: [streamerId], references: [id])
+
+  // ── PAYOUT AMOUNTS (Axiom 2.2) ────────────────────────────────────────────
+  // Whole Gems deducted from availableBalance. Minimum: 500.
+  gemAmount       Int
+  // USDT value in micro-units (6 decimal places) stored as String for BigInt
+  // safety. 500 Gems → "50000000" (i.e. 50.000000 USDT).
+  usdtAmountUnits String
+
+  // ── DESTINATION ───────────────────────────────────────────────────────────
+  // Snapshot of the wallet address at payout time (user may change it later).
+  destinationWallet String
+
+  // ── LIFECYCLE (§6) ────────────────────────────────────────────────────────
+  status          PayoutStatus @default(REQUESTED)
+  // Polygon transaction hash — null until PROCESSING state.
+  txHash          String?      @unique
+  // Block number at confirmation — null until COMPLETED state.
+  confirmedBlock  Int?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([streamerId, status])   // Streamer payout history queries
+  @@index([status])               // Platform-wide payout queue monitoring
+}
+
+// =============================================================================
+// MODEL: ProcessedWebhooks
+//
+// Idempotency guard for the Stripe webhook listener (§5).
+// Before processing ANY Stripe event, the handler checks this table.
+// If stripeEventId already exists → return 200 OK, touch nothing.
+// This prevents double-crediting Gems on webhook retries.
+// =============================================================================
+model ProcessedWebhooks {
+  // The Stripe Event ID (e.g. "evt_1Abc...") is the natural primary key here.
+  stripeEventId   String   @id
+  processedAt     DateTime @default(now())
+
+  // @@index not needed — PK is already a B-tree index in PostgreSQL.
+}

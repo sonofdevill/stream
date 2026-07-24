@@ -1,0 +1,76 @@
+# =============================================================================
+# GemStream — Caddy Reverse Proxy
+# Production domain: stream.irjavid.org:2053 (Let's Encrypt via Caddy)
+#
+# Architecture:
+#   Frontend (Next.js dashboard + OBS overlay)  → 127.0.0.1:3001
+#   Backend  (Express API + Socket.io)          → 127.0.0.1:9234
+#
+# Routing:
+#   /api/*        → backend (prefix stripped: /api/auth/login → /auth/login)
+#   /socket.io/*  → backend (WebSocket upgrade preserved)
+#   /*            → frontend
+#
+# Client env:
+#   NEXT_PUBLIC_API_URL=https://stream.irjavid.org:2053/api
+#   NEXT_PUBLIC_SOCKET_URL=https://stream.irjavid.org:2053
+#
+# Backend env:
+#   DASHBOARD_ORIGIN=https://stream.irjavid.org:2053
+#   ALLOWED_ORIGINS=https://stream.irjavid.org:2053
+# =============================================================================
+
+{
+	email admin@irjavid.org
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+stream.irjavid.org:2053 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		-Server
+	}
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:9234 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle /socket.io/* {
+		reverse_proxy 127.0.0.1:9234 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up Connection {>Connection}
+			header_up Upgrade {>Upgrade}
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3001 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up Connection {>Connection}
+			header_up Upgrade {>Upgrade}
+		}
+	}
+}
+
+http://stream.irjavid.org {
+	redir https://{host}:2053{uri} permanent
+}
