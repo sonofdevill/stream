@@ -11,10 +11,8 @@ import {
   Clock,
   Eye,
 } from "lucide-react";
-import { dispatchTestAlert } from "../../../lib/api";
+import { dispatchTestAlert, updateWallet } from "../../../lib/api";
 import { useAuth } from "../../../lib/auth";
-
-const STREAMER_ID = "UUID_STREAMER_TEST";
 
 function isValidPolygonAddress(addr: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(addr);
@@ -49,16 +47,14 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-// ── Widget Configurator ──────────────────────────────────────────────────────
-
-function WidgetConfigurator() {
+function WidgetConfigurator({ streamerId }: { streamerId: string }) {
   const [overlayUrl, setOverlayUrl] = useState("");
   const [duration, setDuration] = useState(6);
   const [previewVisible, setPreviewVisible] = useState(false);
 
   useEffect(() => {
-    setOverlayUrl(`${window.location.origin}/overlay?streamerId=${STREAMER_ID}`);
-  }, []);
+    setOverlayUrl(`${window.location.origin}/overlay?streamerId=${streamerId}`);
+  }, [streamerId]);
 
   const testMutation = useMutation({
     mutationFn: dispatchTestAlert,
@@ -77,7 +73,6 @@ function WidgetConfigurator() {
         </h3>
       </div>
 
-      {/* OBS URL */}
       <div>
         <label className="mb-1.5 block text-xs font-medium text-zinc-400">
           OBS Browser Source URL
@@ -89,11 +84,10 @@ function WidgetConfigurator() {
           <CopyButton text={overlayUrl} />
         </div>
         <p className="mt-1 text-xs text-zinc-600">
-          Add this as a Browser Source in OBS (1920x1080, transparent background).
+          Add this as a Browser Source in OBS (1920×1080, transparent background).
         </p>
       </div>
 
-      {/* Alert Duration */}
       <div>
         <label className="mb-1.5 flex items-center gap-2 text-xs font-medium text-zinc-400">
           <Clock className="h-3.5 w-3.5" />
@@ -114,7 +108,6 @@ function WidgetConfigurator() {
         </div>
       </div>
 
-      {/* Preview & Test */}
       <div>
         <label className="mb-1.5 flex items-center gap-2 text-xs font-medium text-zinc-400">
           <Eye className="h-3.5 w-3.5" />
@@ -122,7 +115,7 @@ function WidgetConfigurator() {
         </label>
         <div className="relative overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 p-4 min-h-[120px] flex items-center justify-center">
           {previewVisible ? (
-            <div className="flex flex-col items-center gap-2 rounded-xl border border-purple-500/30 bg-gradient-to-b from-purple-950/90 to-indigo-950/90 px-8 py-5 shadow-[0_0_30px_rgba(139,92,246,0.25)] animate-in zoom-in-95 duration-300">
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-purple-500/30 bg-gradient-to-b from-purple-950/90 to-indigo-950/90 px-8 py-5 shadow-[0_0_30px_rgba(139,92,246,0.25)]">
               <Sparkles className="h-6 w-6 text-amber-400" />
               <p className="text-sm font-bold text-white">
                 <span className="text-amber-300">PreviewUser</span>{" "}
@@ -142,7 +135,7 @@ function WidgetConfigurator() {
           onClick={() =>
             testMutation.mutate({
               tipId: `preview-${Date.now()}`,
-              streamerId: STREAMER_ID,
+              streamerId,
               viewerUsername: "PreviewUser",
               gemAmount: 250,
               customMessage: "Test preview!",
@@ -157,16 +150,17 @@ function WidgetConfigurator() {
   );
 }
 
-// ── Wallet Management ────────────────────────────────────────────────────────
-
-function WalletManager() {
-  const [address, setAddress] = useState("");
-  const [saved, setSaved] = useState(false);
+function WalletManager({ initialAddress }: { initialAddress?: string | null }) {
+  const [address, setAddress] = useState(initialAddress ?? "");
   const [error, setError] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: (addr: string) => updateWallet(addr),
+  });
 
   const handleSave = () => {
     setError("");
-    setSaved(false);
+    mutation.reset();
 
     if (!address) {
       setError("Wallet address is required.");
@@ -177,9 +171,7 @@ function WalletManager() {
       return;
     }
 
-    // In production this would be a PUT to the backend
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    mutation.mutate(address);
   };
 
   return (
@@ -192,7 +184,7 @@ function WalletManager() {
       </div>
 
       <p className="text-xs text-zinc-500">
-        USDT payouts will be sent to this Polygon (MATIC) address. Minimum payout: 500 Gems ($50 USDT).
+        USDT payouts are sent to this Polygon (MATIC) address. Minimum payout: 500 Gems ($50 USDT).
       </p>
 
       <div>
@@ -204,19 +196,26 @@ function WalletManager() {
           onChange={(e) => {
             setAddress(e.target.value);
             setError("");
-            setSaved(false);
+            mutation.reset();
           }}
           placeholder="0x..."
           className={`w-full rounded-lg border bg-zinc-800 px-3 py-2.5 text-sm font-mono text-white outline-none transition-colors ${
             error
               ? "border-red-500 focus:border-red-400"
-              : saved
+              : mutation.isSuccess
                 ? "border-green-500 focus:border-green-400"
                 : "border-zinc-700 focus:border-purple-500"
           }`}
         />
         {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-        {saved && (
+        {mutation.isError && (
+          <p className="mt-1 text-xs text-red-400">
+            {mutation.error instanceof Error
+              ? mutation.error.message
+              : "Failed to save. Please try again."}
+          </p>
+        )}
+        {mutation.isSuccess && (
           <p className="mt-1 flex items-center gap-1 text-xs text-green-400">
             <Check className="h-3 w-3" /> Wallet address saved
           </p>
@@ -225,18 +224,22 @@ function WalletManager() {
 
       <button
         onClick={handleSave}
-        className="rounded-lg bg-green-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-green-500"
+        disabled={mutation.isPending}
+        className="rounded-lg bg-green-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
       >
-        Save Address
+        {mutation.isPending ? "Saving..." : "Save Address"}
       </button>
     </div>
   );
 }
 
-// ── Page ─────────────────────────────────────────────────────────────────────
-
 export default function SettingsPage() {
   const { user } = useAuth();
+
+  // Admin uses the test streamer ID for demo purposes.
+  // Real streamers use their own userId as the room/streamer identifier.
+  const streamerId =
+    user?.role === "ADMIN" ? "UUID_STREAMER_TEST" : (user?.userId ?? "UUID_STREAMER_TEST");
 
   return (
     <div>
@@ -248,8 +251,8 @@ export default function SettingsPage() {
       </header>
 
       <div className="space-y-6 p-6">
-        <WidgetConfigurator />
-        <WalletManager />
+        <WidgetConfigurator streamerId={streamerId} />
+        <WalletManager initialAddress={user?.walletAddress} />
       </div>
     </div>
   );

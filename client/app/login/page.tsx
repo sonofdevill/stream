@@ -18,8 +18,21 @@ export default function LoginPage() {
     try {
       await login(email, password);
       router.push("/dashboard");
-    } catch {
-      setError("Invalid credentials");
+    } catch (err: unknown) {
+      if (err && typeof err === "object" && "response" in err) {
+        const axiosErr = err as { response?: { status?: number; data?: { message?: string } } };
+        if (axiosErr.response?.status === 401) {
+          setError("Invalid email or password.");
+        } else if (axiosErr.response?.data?.message) {
+          setError(axiosErr.response.data.message);
+        } else {
+          setError(`Request failed (${axiosErr.response?.status ?? "unknown status"}). Check the browser console.`);
+        }
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Unexpected error. Check the browser console.");
+      }
     } finally {
       setLoading(false);
     }

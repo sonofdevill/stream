@@ -54,13 +54,14 @@ export class AuthController {
         email: req.user.email,
         role: req.user.role,
         username: "Admin",
+        walletAddress: null,
       });
       return;
     }
 
     const user = await this.prisma.user.findUnique({
       where: { id: req.user.userId },
-      select: { id: true, email: true, role: true, username: true },
+      select: { id: true, email: true, role: true, username: true, walletAddress: true },
     });
 
     if (!user) {
@@ -73,6 +74,40 @@ export class AuthController {
       email: user.email,
       role: user.role,
       username: user.username,
+      walletAddress: user.walletAddress ?? null,
     });
+  };
+
+  updateWallet = async (req: Request, res: Response): Promise<void> => {
+    if (!req.user) {
+      res.status(401).json({ error: "UNAUTHORIZED" });
+      return;
+    }
+
+    if (req.user.userId === "admin-001") {
+      res.status(400).json({ error: "BAD_REQUEST", message: "Admin account does not support wallet updates." });
+      return;
+    }
+
+    const { walletAddress } = req.body as { walletAddress?: string };
+
+    if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+      res.status(400).json({
+        error: "BAD_REQUEST",
+        message: "Invalid Polygon wallet address. Must be 0x followed by 40 hex characters.",
+      });
+      return;
+    }
+
+    try {
+      await this.prisma.user.update({
+        where: { id: req.user.userId },
+        data: { walletAddress },
+      });
+      res.status(200).json({ walletAddress });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error.";
+      res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message });
+    }
   };
 }

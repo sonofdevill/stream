@@ -117,14 +117,22 @@ export class CryptoController {
         });
       } catch (broadcastError) {
         // Phase 2 failed. CryptoService has already set PayoutLog → FAILED.
-        // TODO: call this.ledgerService.revertPayout(ledgerResult.payoutId)
-        // to restore the Streamer's availableBalance once that method is implemented.
-        console.error(
-          `[CryptoController] Payout broadcast failed for payoutId=${ledgerResult.payoutId}. ` +
-            `Manual balance restoration required for streamerId=${streamerId}.`,
-          broadcastError
-        );
-        throw broadcastError; // Re-throw to be caught by the outer catch block
+        // Restore the Streamer's availableBalance that Phase 1 deducted.
+        try {
+          await this.ledgerService.revertPayout(ledgerResult.payoutId);
+          console.warn(
+            `[CryptoController] Payout broadcast failed for payoutId=${ledgerResult.payoutId}. ` +
+              `availableBalance restored for streamerId=${streamerId}.`
+          );
+        } catch (revertError) {
+          // Revert itself failed — this is a critical consistency error requiring manual intervention.
+          console.error(
+            `[CryptoController] CRITICAL: Payout revert failed for payoutId=${ledgerResult.payoutId}. ` +
+              `Streamer ${streamerId} balance may be permanently deducted. Manual fix required.`,
+            revertError
+          );
+        }
+        throw broadcastError;
       }
 
       res.status(200).json({ ledger: ledgerResult, chain: chainResult });

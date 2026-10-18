@@ -81,7 +81,7 @@ export default function LogsPage() {
       socket.off("connect_error", onError);
       socket.off("TIP_DISPATCHED", onTip);
     };
-  });
+  }, [socket, paused]);
 
   // Initial boot log
   useEffect(() => {

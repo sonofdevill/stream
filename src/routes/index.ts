@@ -168,6 +168,18 @@ export function registerRoutes(app: Application, httpServer: HttpServer): void {
    * Internal endpoint: processes a Stripe chargeback by reversing PENDING tips
    * tied to the disputed PaymentIntent. Gems clawed back from pendingBalance only.
    */
+  /**
+   * GET /ledger/tips/:streamerId
+   * Returns paginated tip history for a Streamer from the database.
+   * Accessible by the Streamer themselves or an ADMIN.
+   */
+  ledgerRouter.get(
+    "/tips/:streamerId",
+    authMiddleware,
+    requireSelfOrRole("streamerId", "ADMIN"),
+    ledgerController.getTips
+  );
+
   ledgerRouter.post(
     "/chargeback",
     authMiddleware,
@@ -235,6 +247,20 @@ export function registerRoutes(app: Application, httpServer: HttpServer): void {
   authRouter.get("/me", authMiddleware, authController.me);
 
   app.use("/auth", authRouter);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // USER ROUTES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const userRouter = Router();
+
+  /**
+   * PUT /user/wallet
+   * Updates the authenticated Streamer's Polygon wallet address for USDT payouts.
+   */
+  userRouter.put("/wallet", authMiddleware, authController.updateWallet);
+
+  app.use("/user", userRouter);
 
   // ══════════════════════════════════════════════════════════════════════════
   // GLOBAL ERROR HANDLER

@@ -13,6 +13,7 @@ import {
   WifiOff,
   AlertTriangle,
   ChevronRight,
+  Gem,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "../../lib/auth";
 import { SocketProvider, useConnectionStatus } from "../../lib/socket";
@@ -27,6 +28,7 @@ const STREAMER_ID = "UUID_STREAMER_TEST";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/gems", label: "Buy Gems", icon: Gem },
   { href: "/dashboard/transactions", label: "Transactions", icon: History },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
   { href: "/dashboard/logs", label: "System Logs", icon: ScrollText },

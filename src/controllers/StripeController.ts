@@ -118,9 +118,10 @@ export class StripeController {
 
       res.status(200).json({ received: true, ...result });
     } catch (error) {
-      const errorName = error instanceof Error ? error.name : "";
+      // Stripe SDK sets error.type (not error.name) for signature errors
+      const errorType = (error as { type?: string }).type;
 
-      if (errorName === "StripeSignatureVerificationError") {
+      if (errorType === "StripeSignatureVerificationError") {
         // Bad signature = reject with 400 (not retryable by Stripe)
         res.status(400).json({
           error: "INVALID_SIGNATURE",

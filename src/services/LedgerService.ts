@@ -549,6 +549,75 @@ export class LedgerService {
    * @returns ChargebackReverseResult with totals and IDs for audit logging
    * @throws Error if the FiatDepositLog is not found for the given PaymentIntent
    */
+  // ===========================================================================
+  // PUBLIC METHOD: revertPayout
+  // ===========================================================================
+
+  /**
+   * Restores a Streamer's availableBalance after a failed Phase 2 blockchain
+   * broadcast. Called by CryptoController when CryptoService throws a
+   * PayoutBroadcastError — at that point PayoutLog.status is already FAILED.
+   *
+   * This method does NOT change PayoutLog.status (already set to FAILED by
+   * CryptoService). It only restores the balance deducted by requestPayout().
+   *
+   * @param payoutId - UUID of the FAILED PayoutLog to revert
+   */
+  async revertPayout(payoutId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const payout = await tx.payoutLog.findUnique({
+        where: { id: payoutId },
+        select: { streamerId: true, gemAmount: true, status: true },
+      });
+
+      if (!payout) {
+        throw new Error(`[LedgerService] revertPayout: PayoutLog not found: ${payoutId}`);
+      }
+
+      if (payout.status !== "FAILED") {
+        throw new Error(
+          `[LedgerService] revertPayout: Cannot revert PayoutLog in status "${payout.status}". ` +
+            `Only FAILED payouts can be reverted.`
+        );
+      }
+
+      await tx.user.update({
+        where: { id: payout.streamerId },
+        data: { availableBalance: { increment: payout.gemAmount } },
+      });
+    });
+  }
+
+  // ===========================================================================
+  // PUBLIC METHOD: getTips
+  // ===========================================================================
+
+  /**
+   * Returns paginated tip history for a Streamer, ordered newest-first.
+   * Used by the dashboard Transactions page to show historical tips from the DB.
+   *
+   * @param streamerId - UUID of the Streamer
+   * @param limit      - Maximum number of records to return (default 50)
+   */
+  async getTips(streamerId: string, limit = 50) {
+    return this.prisma.tipEvent.findMany({
+      where: { streamerId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        viewerId: true,
+        streamerId: true,
+        gemAmount: true,
+        customMessage: true,
+        status: true,
+        clearedAt: true,
+        createdAt: true,
+        viewer: { select: { username: true } },
+      },
+    });
+  }
+
   async reverseChargedbackTips(input: ChargebackReverseInput): Promise<ChargebackReverseResult> {
     const result = await this.prisma.$transaction(async (tx) => {
       // ── Locate the Disputed Deposit ────────────────────────────────────────

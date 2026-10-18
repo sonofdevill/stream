@@ -47,7 +47,7 @@ export function SocketProvider({
     const socketUrl = getSocketUrl();
     const socket = io(socketUrl, {
       path: "/socket.io",
-      transports: ["websocket", "polling"],
+      transports: ["polling"],
     });
     socketRef.current = socket;
 

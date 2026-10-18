@@ -184,6 +184,29 @@ export class LedgerController {
    * affected Streamer pendingBalances. The Streamer's availableBalance is
    * never touched — only PENDING tips (within the 14-day window) are reversed.
    */
+  // ===========================================================================
+  // GET /ledger/tips/:streamerId
+  // Returns paginated tip history for a Streamer from the database.
+  // ===========================================================================
+
+  getTips = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { streamerId } = req.params;
+      const limit = Math.min(Number(req.query["limit"]) || 50, 200);
+
+      if (!streamerId) {
+        res.status(400).json({ error: "BAD_REQUEST", message: "Missing streamerId." });
+        return;
+      }
+
+      const tips = await this.ledgerService.getTips(String(streamerId), limit);
+      res.status(200).json(tips);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error.";
+      res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message });
+    }
+  };
+
   handleChargeback = async (req: Request, res: Response): Promise<void> => {
     try {
       const { stripePaymentIntentId, stripeEventId } = req.body as {

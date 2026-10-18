@@ -62,6 +62,7 @@ export interface AuthUser {
   email: string;
   role: Role;
   username: string;
+  walletAddress?: string | null;
 }
 
 export interface LoginResponse {
@@ -160,6 +161,52 @@ export async function dispatchTestAlert(payload: TipAlertPayload): Promise<Dispa
 
 export async function getBalance(userId: string): Promise<UserBalanceSnapshot> {
   const { data } = await api.get<UserBalanceSnapshot>(`/ledger/balance/${userId}`);
+  return data;
+}
+
+// ── User Endpoints ───────────────────────────────────────────────────────────
+
+export async function updateWallet(walletAddress: string): Promise<{ walletAddress: string }> {
+  const { data } = await api.put<{ walletAddress: string }>("/user/wallet", { walletAddress });
+  return data;
+}
+
+// ── Stripe Endpoints ─────────────────────────────────────────────────────────
+
+export interface CreateCheckoutResult {
+  checkoutUrl: string;
+  sessionId: string;
+}
+
+export async function createCheckoutSession(input: {
+  viewerId: string;
+  bundleId: string;
+  email: string;
+  successUrl: string;
+  cancelUrl: string;
+}): Promise<CreateCheckoutResult> {
+  const { data } = await api.post<CreateCheckoutResult>("/stripe/checkout", input);
+  return data;
+}
+
+// ── Tip History Endpoints ────────────────────────────────────────────────────
+
+export interface TipHistoryEntry {
+  id: string;
+  viewerId: string;
+  streamerId: string;
+  gemAmount: number;
+  customMessage: string | null;
+  status: "PENDING" | "CLEARED" | "REVERSED";
+  clearedAt: string;
+  createdAt: string;
+  viewer?: { username: string };
+}
+
+export async function getTips(streamerId: string, limit = 50): Promise<TipHistoryEntry[]> {
+  const { data } = await api.get<TipHistoryEntry[]>(`/ledger/tips/${streamerId}`, {
+    params: { limit },
+  });
   return data;
 }
 

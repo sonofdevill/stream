@@ -45,7 +45,7 @@ export default function OverlayPage() {
 
     const socket = io(socketUrl, {
       path: "/socket.io",
-      transports: ["websocket", "polling"],
+      transports: ["polling"],
     });
     socketRef.current = socket;
     (window as unknown as Record<string, unknown>).__socket = socket;
